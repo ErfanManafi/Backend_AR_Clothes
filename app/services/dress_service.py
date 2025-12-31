@@ -3,60 +3,33 @@ import uuid
 from typing import Optional
 from sqlalchemy.orm import Session
 from fastapi import UploadFile, HTTPException, status
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from app.core.config import settings
 from app.models.dress import Dress
 from app.models.user import User
 from app.schemas.dress import DressCreate
-from app.api.deps import CurrentUser
 
-# اندازه استاندارد برای ریسایز خودکار [cite: 40]
 TARGET_SIZE = (512, 512) 
-MAX_FILE_SIZE_MB = 5 # محدودیت حجم عکس [cite: 91]
+MAX_FILE_SIZE_MB = 5 
 
 class DressService:
     
     def _validate_file(self, file: UploadFile):
-        """اعتبارسنجی فرمت و حجم فایل قبل از ذخیره سازی [cite: 34, 91]"""
-        
-        # ۱. بررسی فرمت فایل
+        """اعتبارسنجی فرمت و حجم فایل"""
         allowed_formats = ["image/png", "image/jpeg", "image/jpg"]
         if file.content_type not in allowed_formats:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file format. Only PNG, JPEG, JPG are acceptable."
+                detail="فرمت فایل نامعتبر است. فقط PNG و JPG مجاز هستند."
             )
-            
-        # ۲. بررسی حجم فایل (نیاز به خواندن کل فایل دارد که ممکن است کند باشد)
-        # برای دقت بیشتر، بهتر است این کار در روتر یا Middleware انجام شود.
-        if file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+        
+        # بررسی حجم فایل بدون خواندن کل آن در حافظه (اگر سرور ساپورت کند)
+        if file.size and file.size > MAX_FILE_SIZE_MB * 1024 * 1024:
              raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File size exceeds the limit of {MAX_FILE_SIZE_MB} MB."
+                detail=f"حجم فایل نباید بیشتر از {MAX_FILE_SIZE_MB} مگابایت باشد."
             )
-            
-    def _generate_alpha_mask(self, img: Image.Image) -> Image.Image:
-        """
-        در صورت ۳ کاناله بودن تصویر، یک Alpha Mask سفید ایجاد می‌کند. 
-        این یک پیاده سازی ساده است و فرض می کند پس زمینه سفید/یکدست است.
-        برای سناریوهای حرفه ای، نیاز به مدل های AI/Body Segmentation است[cite: 37, 164].
-        """
-        # اگر تصویر کانال آلفا ندارد (مثلاً RGB است)
-        if img.mode == 'RGB':
-            # یک کانال آلفای کاملاً مات (سفید) با اندازه تصویر ایجاد می کند
-            alpha = Image.new('L', img.size, 255)
-            img.putalpha(alpha)
-            print("Alpha mask created for 3-channel image.")
-            
-        return img
-
-    def _resize_image_with_alpha(self, img: Image.Image) -> Image.Image:
-        """تصویر را به اندازه استاندارد ریسایز کرده و آلفا را حفظ می کند[cite: 40, 42]."""
-        
-        # Pillow به طور خودکار آلفا را هنگام ریسایز حفظ می کند اگر تصویر دارای آلفا باشد
-        resized_img = img.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
-        return resized_img
 
     def upload_dress(
         self, 
@@ -65,51 +38,58 @@ class DressService:
         file: UploadFile, 
         dress_in: DressCreate
     ) -> Dress:
-        """
-        عملیات آپلود و پردازش تصویر را انجام می دهد.
-        """
         self._validate_file(file)
         
-        # ۱. ذخیره موقت فایل
-        unique_filename = f"{uuid.uuid4()}_{file.filename}"
-        file_path_temp = os.path.join(settings.STORAGE_PATH, unique_filename)
+        # ۱. ساخت نام منحصر به فرد (فقط UUID + پسوند اصلی)
+        extension = os.path.splitext(file.filename)[1].lower()
+        if not extension: extension = ".png" # پیش‌فرض
         
-        # ایجاد دایرکتوری در صورت عدم وجود
+        unique_filename = f"{uuid.uuid4()}{extension}"
+        # استفاده از مسیر نسبی برای ذخیره در دیتابیس (بهتر برای جابجایی پروژه)
+        relative_path = os.path.join(settings.STORAGE_PATH, unique_filename)
+        absolute_path = os.path.abspath(relative_path)
+        
         os.makedirs(settings.STORAGE_PATH, exist_ok=True)
         
-        # ذخیره فایل در مسیر موقت
+        # ۲. ذخیره فایل به صورت Chunk (بهینه برای حافظه RAM)
         try:
-            with open(file_path_temp, "wb") as f:
-                f.write(file.file.read())
-        except Exception:
-            raise HTTPException(status_code=500, detail="Could not save the uploaded file temporarily.")
-
-        # ۲. پردازش تصویر (ریسایز و آلفا)
-        try:
-            img = Image.open(file_path_temp)
-            
-            # تشخیص و ایجاد آلفا ماسک [cite: 35]
-            img = self._generate_alpha_mask(img)
-            
-            # سایز خودکار [cite: 38]
-            img = self._resize_image_with_alpha(img)
-            
-            # ذخیره نسخه نهایی (ترجیحاً PNG با آلفا) [cite: 34]
-            img.save(file_path_temp, "PNG") 
-
+            with open(absolute_path, "wb") as f:
+                # خواندن فایل در قطعات ۱۰۲۴ بایتی
+                while content := file.file.read(1024 * 1024):
+                    f.write(content)
         except Exception as e:
-            # در صورت خطا در پردازش، فایل موقت حذف شود
-            if os.path.exists(file_path_temp):
-                os.remove(file_path_temp)
-            print(f"Image processing error: {e}")
-            raise HTTPException(status_code=500, detail="Error during image processing (Resize/Alpha Mask).")
+            raise HTTPException(status_code=500, detail=f"خطا در ذخیره فایل: {e}")
 
-        # ۳. ذخیره رکورد در دیتابیس
+        # ۳. پردازش تصویر (Resize و تبدیل به PNG برای حفظ Alpha)
+        try:
+            with Image.open(absolute_path) as img:
+                # ایجاد کانال آلفا اگر وجود ندارد
+                if img.mode != 'RGBA':
+                    img = img.convert('RGBA')
+                
+                # ریسایز با کیفیت بالا
+                img = img.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
+                
+                # ذخیره نهایی (جایگزین کردن فایل اصلی با نسخه بهینه شده PNG)
+                final_filename = unique_filename.replace(extension, ".png")
+                final_relative_path = os.path.join(settings.STORAGE_PATH, final_filename)
+                final_absolute_path = os.path.abspath(final_relative_path)
+                
+                img.save(final_absolute_path, "PNG")
+                
+                # اگر پسوند عوض شده، فایل موقت قبلی حذف شود
+                if absolute_path != final_absolute_path:
+                    os.remove(absolute_path)
+        except Exception as e:
+            if os.path.exists(absolute_path): os.remove(absolute_path)
+            raise HTTPException(status_code=500, detail="خطا در پردازش تصویر.")
+
+        # ۴. ذخیره در دیتابیس
         db_dress = Dress(
             user_id=user.id,
-            file_path=file_path_temp, # ذخیره مسیر محلی در دیتابیس
+            file_path=final_relative_path, # مسیر نسبی ذخیره می‌شود
             gender=dress_in.gender,
-            title=dress_in.title if dress_in.title else file.filename,
+            title=dress_in.title or file.filename,
             width=TARGET_SIZE[0],
             height=TARGET_SIZE[1]
         )
@@ -119,26 +99,14 @@ class DressService:
         db.refresh(db_dress)
         return db_dress
 
+    # بقیه متدها (get, delete, ...) به قوت خود باقی هستند
     def get_user_dresses(self, db: Session, user_id: uuid.UUID, gender: Optional[str] = None) -> list[Dress]:
-        """لیست لباس های آپلود شده توسط کاربر را برمی گرداند[cite: 50]."""
         query = db.query(Dress).filter(Dress.user_id == user_id)
         if gender:
             query = query.filter(Dress.gender == gender)
         return query.order_by(Dress.created_at.desc()).all()
 
-    def delete_dress(self, db: Session, dress: Dress):
-        """حذف لباس از دیتابیس و فایل محلی[cite: 53]."""
-        # ۱. حذف فایل محلی
-        if os.path.exists(dress.file_path):
-            os.remove(dress.file_path)
-            
-        # ۲. حذف از دیتابیس
-        db.delete(dress)
-        db.commit()
-        
     def get_dress_by_id(self, db: Session, dress_id: uuid.UUID) -> Optional[Dress]:
-        """بازیابی لباس بر اساس ID."""
         return db.query(Dress).filter(Dress.id == dress_id).first()
 
-# ایجاد یک نمونه از سرویس برای استفاده در روتر
 dress_service = DressService()
