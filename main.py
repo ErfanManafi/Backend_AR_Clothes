@@ -69,6 +69,9 @@ This API serves as the backbone for a virtual fitting room application, managing
     - **How it works**: Decodes the Bearer Token from the header, identifies the user, and returns profile information.
 * **`PUT` /profile**: 
     - **Description**: Update User Profile. Allows users to modify personal information (name/gender).
+* **`DELETE` /me**: 
+    - **Description**: **Delete Account**. Permanently removes the authenticated user's profile and all associated data.
+    - **How it works**: Verifies the token, deletes user records from the database (Hard Delete), and invalidates the session.
 
 ### 2. Garment Management (Dresses)
 * **`POST` /dresses**: 
