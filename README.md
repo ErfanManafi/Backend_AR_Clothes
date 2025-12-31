@@ -55,8 +55,8 @@ A high-performance FastAPI backend infrastructure designed for virtual try-on sy
 
 1. **Clone the repository**:
    ```bash
-   git clone <your-repo-link>
-   cd <repo-folder>
+   git clone https://github.com/ErfanManafi/Backend_AR_Clothes.git
+   cd Backend_AR_Clothes
 
 ## ⚙️ Create a virtual environment
 
