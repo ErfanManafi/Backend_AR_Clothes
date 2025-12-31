@@ -39,6 +39,7 @@ A high-performance FastAPI backend infrastructure designed for virtual try-on sy
 * **`POST /signup`**: Register a new user with hashed password security.
 * **`POST /login`**: Exchange credentials for a JWT Access Token.
 * **`GET /profile`**: Retrieve authenticated user details via Bearer Token.
+* **`DELETE /me`**: Permanently delete the user account and all associated garments.
 
 ### 2. Garment Management (Dresses)
 * **`POST /api/v1/dresses`**: Upload and process garment images (Auto-resize & Transparency).
